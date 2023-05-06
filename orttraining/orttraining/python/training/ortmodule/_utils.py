@@ -7,6 +7,7 @@
 import copy
 import functools
 import inspect
+import json
 import os
 import random
 import traceback
@@ -23,6 +24,7 @@ from torch.utils.dlpack import to_dlpack
 from onnxruntime.capi import _pybind_state as C
 from onnxruntime.capi.onnxruntime_inference_collection import OrtValue
 from onnxruntime.tools import pytorch_export_contrib_ops
+from onnxruntime.training import ortmodule
 
 from . import _onnx_models
 from ._custom_gradient_registry import CustomGradientRegistry
@@ -427,3 +429,29 @@ def reinitialize_graph_execution_manager(graph_execution_manager):
 def reinitialize_training_manager(training_manager):
     # Redefine training managers forward_class
     training_manager._forward_class = training_manager._create_autofunction_class()
+
+
+def save_tuning_results(session, is_training):
+    if ortmodule._defined_from_envvar("ORTMODULE_ENABLE_TUNING", 0) != 0:
+        tuning_results_path = ortmodule._defined_from_envvar("ORTMODULE_TUNING_RESULTS_PATH", "")
+        if tuning_results_path != "":
+            if not tuning_results_path.endswith("/"):
+                tuning_results_path += "/"
+            os.makedirs(os.path.dirname(tuning_results_path), exist_ok=True)
+            suffix = "training" if is_training else "inference"
+            tuning_result_file = f"{tuning_results_path}tuning_results_{suffix}.json"
+            with open(tuning_result_file, "w") as f:
+                json.dump(session.get_tuning_results(), f, indent=4)
+
+
+def set_tuning_results(session, is_training):
+    if ortmodule._defined_from_envvar("ORTMODULE_ENABLE_TUNING", 0) == 0:
+        tuning_results_path = ortmodule._defined_from_envvar("ORTMODULE_TUNING_RESULTS_PATH", "")
+        if tuning_results_path != "":
+            if not tuning_results_path.endswith("/"):
+                tuning_results_path += "/"
+            suffix = "training" if is_training else "inference"
+            tuning_result_file = f"{tuning_results_path}tuning_results_{suffix}.json"
+            if os.path.isfile(tuning_result_file):
+                with open(tuning_result_file, "r") as f:
+                    session.set_tuning_results(json.load(f))

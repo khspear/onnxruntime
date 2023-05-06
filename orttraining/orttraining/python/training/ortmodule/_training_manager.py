@@ -19,6 +19,7 @@ from ._gradient_accumulation_manager import GradientAccumulationManager
 from ._graph_execution_manager import GraphExecutionManager, _RunStateInfo, _SkipCheck
 from ._io import _FlattenedModule, _InputInfo
 from ._graph_transformer_registry import GraphTransformerRegistry
+from ._utils import save_tuning_results
 from .debug_options import DebugOptions
 
 
@@ -280,10 +281,6 @@ class TrainingManager(GraphExecutionManager):
                 if self._device != device:
                     self._device = device
 
-            # Build the gradient graph
-            if build_gradient_graph:
-                self._build_graph()
-
             if create_execution_session:
                 # Create execution session creates the training_session
                 self._create_execution_agent()
@@ -305,10 +302,15 @@ class TrainingManager(GraphExecutionManager):
                 self._rt_inspector,
             )
 
-            return _io.unflatten_user_output(
+            outputs = _io.unflatten_user_output(
                 self._module_output_schema,
                 self._forward_class.apply(*prepared_input_list),
             )
+
+            if create_execution_session:
+                save_tuning_results(self._execution_agent._inference_session, True)
+
+            return outputs
         except ORTModuleFallbackException as e:
             # Exceptions subject to fallback are handled here
             self._fallback_manager.handle_exception(exception=e, log_level=self._debug_options.logging.log_level)
