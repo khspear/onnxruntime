@@ -49,6 +49,7 @@ struct CheckpointState {
   PropertyBag property_bag;
 };
 
+#if !defined(ORT_MINIMAL_BUILD)
 /**
  * @brief Save training states as ORT checkpoint.
  *
@@ -90,6 +91,9 @@ Status LoadCheckpoint(const PathString& checkpoint_path,
  */
 Status LoadCheckpointToModel(const PathString& checkpoint_path,
                              ONNX_NAMESPACE::ModelProto& model_proto);
+#endif
+
+// TODO (baijumeswani): Implement loading from and saving to flatbuffers
 
 }  // namespace api
 }  // namespace training

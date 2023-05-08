@@ -21,6 +21,7 @@ namespace onnxruntime {
 namespace training {
 namespace api {
 
+#if !defined(ORT_MINIMAL_BUILD)
 namespace {
 
 const PathString k_tensor_proto_file_name = ORT_TSTR("tensors.pbseq");
@@ -575,6 +576,7 @@ Status LoadCheckpointToModel(const PathString& checkpoint_path,
                              ONNX_NAMESPACE::ModelProto& model_proto) {
   return OrtLoadInternal(checkpoint_path, model_proto);
 }
+#endif
 
 }  // namespace api
 }  // namespace training

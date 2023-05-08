@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+#if !defined(ORT_MINIMAL_BUILD)
+
 #include "onnx/defs/tensor_proto_util.h"
 #include "core/common/inlined_containers.h"
 #include "core/platform/path_lib.h"
@@ -8,9 +10,7 @@
 #include "core/framework/tensorprotoutils.h"
 #include "orttraining/training_api/checkpoint_property.h"
 
-namespace onnxruntime {
-namespace training {
-namespace api {
+namespace onnxruntime::training::api {
 
 namespace {
 
@@ -62,5 +62,5 @@ void PropertyBag::AddProperty(const ONNX_NAMESPACE::TensorProto& tensor_proto) {
 }
 
 }  // namespace api
-}  // namespace training
-}  // namespace onnxruntime
+
+#endif
