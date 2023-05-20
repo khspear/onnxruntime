@@ -579,9 +579,26 @@ namespace Microsoft.ML.OnnxRuntime
         }
 
         /// <summary>
+        /// This method runs inference on the OrtIoBinding instance. It returns a collection of OrtValues.
+        /// This method is useful when it is impossible to bind outputs to pre-allocated buffers, because
+        /// the output shape is not known in advance. In this case, the OrtValues returned by this method
+        /// are allocated and owned by ORT. The caller is responsible for disposing the collection.
+        /// </summary>
+        /// <param name="runOptions">RunOptions</param>
+        /// <param name="ioBinding">Binding instance</param>
+        /// <returns>A disposable collection of OrtValues</returns>
+        public IDisposableReadOnlyCollection<OrtValue> RunWithBindingResults(RunOptions runOptions, OrtIoBinding ioBinding)
+        {
+            NativeApiStatus.VerifySuccess(NativeMethods.OrtRunWithBinding(Handle, runOptions.Handle, ioBinding.Handle));
+            return ioBinding.GetOutputValues();
+        }
+
+        /// <summary>
         ///  This method return a collection of DisposableNamedOnnxValue as in other interfaces
         ///  Query names from OrtIoBinding object and pair then with the array of OrtValues returned
-        /// from OrtIoBinding.GetOutputValues()
+        /// from OrtIoBinding.GetOutputValues().
+        /// 
+        /// This API will be deprecated in favor of the API that returns a collection of OrtValues.
         /// 
         /// </summary>
         /// <param name="runOptions">RunOptions</param>
@@ -597,7 +614,7 @@ namespace Microsoft.ML.OnnxRuntime
             using (var ortValues = ioBinding.GetOutputValues())
             {
                 string[] outputNames = names;
-                if (outputNames == null)
+                if (outputNames == null || names.Length == 0)
                 {
                     outputNames = ioBinding.GetOutputNames();
                 }
@@ -605,8 +622,7 @@ namespace Microsoft.ML.OnnxRuntime
                 if (outputNames.Length != ortValues.Count)
                 {
                     throw new OnnxRuntimeException(ErrorCode.InvalidArgument,
-                        "Number of specified names: " + names.Length + " does not match the output number: " +
-                        ortValues.Count);
+                        $"Number of specified names: {outputNames.Length} does not match the output number: {ortValues.Count}");
                 }
 
                 var result = new DisposableList<DisposableNamedOnnxValue>(outputNames.Length);
