@@ -840,7 +840,7 @@ stages:
 
 - template: nuget/templates/dml-vs-2022.yml
   parameters:
-    AgentPool : 'onnxruntime-Win-CPU-2022'
+    AgentPool : 'aiinfra-dml-winbuild'
     IsReleaseBuild: ${{ parameters.IsReleaseBuild }}
     ArtifactName: 'drop-win-dml-arm64-zip'
     StageName: 'Windows_CI_GPU_DML_Dev_arm64'
