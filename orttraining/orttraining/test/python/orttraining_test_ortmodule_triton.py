@@ -200,6 +200,9 @@ def _run_module_test(module_cls, dtype, gen_inputs_func, triton_op_count, **kwar
         ort_output = _run_step(ort_model, *ort_inputs)
         _test_helpers.assert_values_are_close(pt_output, ort_output, rtol=rtol, atol=atol)
         _test_helpers.assert_gradients_match_and_reset_gradient(pt_model, ort_model, rtol=rtol, atol=atol)
+        for i in range(len(pt_inputs)):
+            if pt_inputs[i].requires_grad:
+                _test_helpers.assert_values_are_close(pt_inputs[i].grad, ort_inputs[i].grad, rtol=rtol, atol=atol)
 
     assert os.path.exists(os.path.join(os.getcwd(), "triton_model_torch_exported_training.onnx"))
     assert os.path.exists(os.path.join(os.getcwd(), "triton_model_optimized_training.onnx"))
@@ -723,6 +726,27 @@ def test_layer_norm_module(dtype, input_shapes_and_axis):
         ]
 
     _run_module_test(NeuralNetLayerNorm, dtype, _gen_inputs, 2)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("has_sum", [True, False])
+def test_slice_scel_module(dtype, has_sum):
+    class NeuralNetSliceScel(torch.nn.Module):
+        def forward(self, logits, labels):
+            shift_logits = logits[..., :-1, :].contiguous()
+            labels = labels[..., 1:].contiguous()
+            loss_fct = torch.nn.CrossEntropyLoss()
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), labels.view(-1))
+            return logits + loss if has_sum else loss
+
+
+    def _gen_inputs(dtype):
+        return [
+            (torch.rand(4, 8, 16) * 0.01).to(dtype=dtype, device=DEVICE).requires_grad_(True),
+            torch.randint(0, 16, (4, 8), dtype=torch.int64, device=DEVICE),
+        ]
+
+    _run_module_test(NeuralNetSliceScel, dtype, _gen_inputs, 2)
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float16])

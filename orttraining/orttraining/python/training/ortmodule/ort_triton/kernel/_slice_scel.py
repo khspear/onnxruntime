@@ -142,7 +142,7 @@ def _slice_scel_bias_backward_kernel(
     c_index = xindex % c
     dloss_value = tl.load(dloss).to(tl.float32)
     log_prob_row = tl.load(log_prob + nd_index * c + c_index, mask=nd_mask, other=0.0)
-    label_row = tl.load(label + nd_index + 1, mask=nd_mask, other=0.0).to(tl.int32)
+    label_row = tl.load(label + dlogit_nd_index + 1, mask=nd_mask, other=0.0).to(tl.int32)
     factor_value = tl.load(factor)
     bias_row = tl.load(bias + xindex, mask=xmask, other=0.0).to(tl.float32)
     dlogit_row = dloss_value * (tl.exp(log_prob_row) - tl.where(c_index == label_row, 1.0, 0.0)) / factor_value
