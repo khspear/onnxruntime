@@ -13,9 +13,9 @@ subdirectory of the build output directory.
 
 e.g.
   - Windows Debug build
-    - \build\Windows\Debug\external\flatbuffers\Debug\flatc.exe
+    - \build\Windows\Debug\_deps\flatbuffers-build\flatc.exe
   - Linux Debug build
-    - /build/Linux/external/flatbuffers/Debug/flatc
+    - /build/Linux/Debug/_deps/flatbuffers-build/flatc
 
 It is possible to use another flatc as well, e.g., from a separate installation. Note that ONNX Runtime uses
 FlatBuffers 1.12.

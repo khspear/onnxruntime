@@ -1,0 +1,14 @@
+// Copyright (c) Microsoft Corporation. All rights reserved.
+// Licensed under the MIT License.
+
+include "ort.fbs";
+
+namespace onnxruntime.fbs;
+
+table Checkpoint {
+  requires_grad:[Tensor];
+  frozen_params:[Tensor];
+}
+
+root_type Checkpoint;
+file_identifier "ORTM";
