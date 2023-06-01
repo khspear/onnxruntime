@@ -1,8 +1,13 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http.Headers;
+using System.Text;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Xunit;
 
 namespace Microsoft.ML.OnnxRuntime.Tests
 {
@@ -145,7 +150,7 @@ namespace Microsoft.ML.OnnxRuntime.Tests
         {
             // No sparse tensor support yet
             //Set buffer size to 4MB
-            int readBufferSize = 4194304;
+            const int readBufferSize = 4194304;
             using (var file = new FileStream(fullFilename, FileMode.Open, FileAccess.Read, FileShare.Read, readBufferSize))
             {
                 switch (nodeMeta.OnnxValueType)
@@ -340,42 +345,12 @@ namespace Microsoft.ML.OnnxRuntime.Tests
         {
             // See GH issue https://github.com/onnx/onnx/issues/5072
             throw new NotImplementedException($"Loading map node: '{nodeName}' not implemented yet");
-
-            //var mapMeta = nodeMetadata.AsMapMetadata();
-
-            //if ((TensorElementType)map.KeyType != mapMeta.KeyDataType)
-            //{
-            //    throw new InvalidDataException($"Node: '{nodeName}' map key type expected: " +
-            //                           $"'{mapMeta.KeyDataType}', loaded from test data: '{(TensorElementType)map.KeyType}'");
-            //}
-
-            //// temp non-generic(!) container
-            //NamedOnnxValue keysTensor;
-            //if (mapMeta.KeyDataType == TensorElementType.String)
-            //{
-            //    keysTensor = CreateNamedOnnxValueFromStringTensor(map.StringKeys, nodeName, new int[] { map.StringKeys.Count });
-            //}
-            //else
-            //{
-            //    keysTensor = CastAndCreateFromMapKeys(nodeName, mapMeta.KeyDataType, map.Keys);
-            //}
-
-            //switch ((Onnx.SequenceProto.Types.DataType)map.Values.ElemType)
-            //{
-            //    case Onnx.SequenceProto.Types.DataType.Tensor:
-            //        var tensorCount = map.Values.TensorValues.Count;
-            //        break;
-            //    default:
-            //        throw new NotImplementedException("Does not support map value type other than a tensor");
-            //}
-
-            //return new NamedOnnxValue(string.Empty, new Object(), OnnxValueType.ONNX_TYPE_UNKNOWN);
         }
 
         internal static NamedOnnxValue CreateNamedOnnxValueFromOptional(Onnx.OptionalProto optional, string nodeName, NodeMetadata nodeMetadata)
         {
             var meta = nodeMetadata.AsOptionalMetadata().ElementMeta;
-            switch((Onnx.OptionalProto.Types.DataType)optional.ElemType)
+            switch ((Onnx.OptionalProto.Types.DataType)optional.ElemType)
             {
                 case Onnx.OptionalProto.Types.DataType.Tensor:
                     {
@@ -426,6 +401,201 @@ namespace Microsoft.ML.OnnxRuntime.Tests
             return NamedOnnxValue.CreateFromTensor<T>(name, dt);
         }
 
+        static OrtValue LoadOrValueTensorPb(Onnx.TensorProto tensor, string nodeName, NodeMetadata nodeMeta)
+        {
+            if (nodeMeta.OnnxValueType != OnnxValueType.ONNX_TYPE_TENSOR)
+            {
+                throw new InvalidDataException($"Metadata for: '{nodeName}' has a type: '{nodeMeta.OnnxValueType}'" +
+                    $" but loading as tensor: {tensor.Name}");
+            }
+
+            var protoDt = (Tensors.TensorElementType)tensor.DataType;
+            var metaElementType = nodeMeta.ElementDataType;
+            if (!((protoDt == metaElementType) ||
+                (protoDt == TensorElementType.UInt16 &&
+                (metaElementType == TensorElementType.BFloat16 || metaElementType == TensorElementType.Float16))))
+                throw new InvalidDataException($"For node: '{nodeName}' metadata expects: '{metaElementType}' but loaded loaded tensor type: '{protoDt}'");
+
+            // Tensors within Sequences may have no dimensions as the standard allows
+            // different dimensions for each tensor element of the sequence
+            if (nodeMeta.Dimensions.Length > 0 && nodeMeta.Dimensions.Length != tensor.Dims.Count)
+            {
+                throw new InvalidDataException($"node: '{nodeName}' nodeMeta.Dim.Length: {nodeMeta.Dimensions.Length} " +
+                    $"is expected to be equal to tensor.Dims.Count {tensor.Dims.Count}");
+            }
+
+            var shape = tensor.Dims.ToArray();
+
+            for (int i = 0; i < nodeMeta.Dimensions.Length; i++)
+            {
+                if ((nodeMeta.Dimensions[i] != -1) && (nodeMeta.Dimensions[i] != shape[i]))
+                    throw new InvalidDataException($"Node: '{nodeName}' dimension at idx {i} is {nodeMeta.Dimensions}[{i}] " +
+                        $"is expected to either be -1 or {shape[i]}");
+            }
+
+            // element type for Float16 and BFloat16 in the loaded tensor would always be uint16, so
+            // we want to use element type from metadata
+            if (protoDt == TensorElementType.String)
+                return CreateOrtValueFromStringTensor(tensor.StringData, shape);
+
+            return CreateOrtValueFromRawData(OrtAllocator.DefaultInstance, tensor.RawData.ToArray(), metaElementType, shape);
+        }
+
+        internal static OrtValue CreateOrtValueFromSequence(Onnx.SequenceProto sequence, string nodeName, NodeMetadata nodeMeta)
+        {
+            var sequenceMeta = nodeMeta.AsSequenceMetadata();
+            var elemMeta = sequenceMeta.ElementMeta;
+
+            int seqNum = 0;
+            var seqElemType = (Onnx.SequenceProto.Types.DataType)sequence.ElemType;
+            switch (seqElemType)
+            {
+                case Onnx.SequenceProto.Types.DataType.Tensor:
+                    {
+                        SequenceCheckMatchOnnxType(nodeName, sequenceMeta, OnnxValueType.ONNX_TYPE_TENSOR);
+                        using (var sequenceOfTensors = new DisposableList<OrtValue>(sequence.TensorValues.Count))
+                        {
+                            foreach (var tensor in sequence.TensorValues)
+                            {
+                                var element = LoadOrValueTensorPb(tensor, sequence.Name, elemMeta);
+                                sequenceOfTensors.Add(element);
+                            }
+                            return OrtValue.CreateSequence(sequenceOfTensors);
+                        }
+                    }
+                case Onnx.SequenceProto.Types.DataType.Sequence: // Sequence of sequences
+                    {
+                        SequenceCheckMatchOnnxType(nodeName, sequenceMeta, OnnxValueType.ONNX_TYPE_SEQUENCE);
+                        using (var seqOfSequences = new DisposableList<OrtValue>(sequence.TensorValues.Count))
+                        {
+                            foreach (var s in sequence.SequenceValues)
+                            {
+                                var elemName = MakeSequenceElementName(nodeName, sequence.Name, seqNum++);
+                                var ortValue = CreateOrtValueFromSequence(s, elemName, elemMeta);
+                                seqOfSequences.Add(ortValue);
+                            }
+                            return OrtValue.CreateSequence(seqOfSequences);
+                        }
+                    }
+                case Onnx.SequenceProto.Types.DataType.Map:
+                    {
+                        throw new OnnxRuntimeException(ErrorCode.NotImplemented,
+                            "Test data format for maps is under investigation");
+                    }
+                case Onnx.SequenceProto.Types.DataType.Optional:
+                    {
+                        SequenceCheckMatchOnnxType(nodeName, sequenceMeta, OnnxValueType.ONNX_TYPE_OPTIONAL);
+                        using (var seqOfSequences = new DisposableList<OrtValue>(sequence.TensorValues.Count))
+                        {
+                            foreach (var opt in sequence.OptionalValues)
+                            {
+                                var elemName = MakeSequenceElementName(nodeName, sequence.Name, seqNum++);
+                                var ortValue = CreateOrtValueFromOptional(opt, elemName, elemMeta);
+                                seqOfSequences.Add(ortValue);
+                            }
+                            return OrtValue.CreateSequence(seqOfSequences);
+                        }
+                    }
+                default:
+                    throw new NotImplementedException($"Sequence test data loading does not support element type: " +
+                        $"'{seqElemType}'");
+            }
+
+        }
+
+        internal static OrtValue CreateOrtValueFromOptional(Onnx.OptionalProto optional, string nodeName, NodeMetadata nodeMetadata)
+        {
+            var meta = nodeMetadata.AsOptionalMetadata().ElementMeta;
+            switch ((Onnx.OptionalProto.Types.DataType)optional.ElemType)
+            {
+                case Onnx.OptionalProto.Types.DataType.Tensor:
+                    {
+                        var tensor = optional.TensorValue;
+                        return LoadOrValueTensorPb(tensor, nodeName, meta);
+                    }
+                case Onnx.OptionalProto.Types.DataType.Sequence:
+                    {
+                        var sequence = optional.SequenceValue;
+                        return CreateOrtValueFromSequence(sequence, nodeName, meta);
+                    }
+                case Onnx.OptionalProto.Types.DataType.Map:
+                    {
+                        throw new OnnxRuntimeException(ErrorCode.NotImplemented,
+                                "Test data format for maps is under investigation");
+
+                    }
+                case Onnx.OptionalProto.Types.DataType.Optional:
+                    throw new NotImplementedException($"Unable to load '{nodeName}' optional contained within optional");
+                default:
+                    // Test data contains OptionalProto with the contained element type undefined.
+                    // the premise is, if the element is not fed as an input, we should not care
+                    // what Onnx type it is. However, we do not need to support AFAIK such inputs
+                    // since the value for them could never be supplied.
+                    throw new NotImplementedException($"Unable to load '{nodeName}' optional element type of: {(Onnx.OptionalProto.Types.DataType)optional.ElemType} type");
+            }
+        }
+
+        internal static OrtValue CreateOrtValueFromRawData(OrtAllocator allocator, byte[] rawData, TensorElementType elementType, long[] shape)
+        {
+            Debug.Assert(elementType != TensorElementType.String, "Does not support strings");
+            var typeInfo = TensorBase.GetElementTypeInfo(elementType);
+            Assert.NotNull(typeInfo);
+
+            var shapeSize = ArrayUtilities.GetSizeForShape(shape);
+            var inferredSize = rawData.Length / typeInfo.TypeSize;
+            Assert.Equal(shapeSize, inferredSize);
+            Assert.Equal(0, rawData.Length % typeInfo.TypeSize);
+
+            var ortValue = OrtValue.CreateAllocatedTensorValue(allocator, elementType, shape);
+            try
+            {
+                var span = ortValue.GetTensorMutableRawData();
+                var rawSpan = new Span<byte>(rawData);
+                rawSpan.CopyTo(span);
+                return ortValue;
+            }
+            catch (Exception)
+            {
+                ortValue.Dispose();
+                throw;
+            }
+        }
+
+
+        internal static (OrtValue, MemoryHandle) CreateOrtValueTensorOverData<T>(T[] data, long[] shape)
+        {
+            Debug.Assert(typeof(T) != typeof(string), "Does not support strings");
+
+            var shapeSize = ArrayUtilities.GetSizeForShape(shape);
+            if (shapeSize != data.Length)
+            {
+                throw new ArgumentException($"Shape size: {shapeSize} does not match data length: {data.Length}");
+            }
+
+            var typeInfo = TensorBase.GetTypeInfo(typeof(T));
+            // Unregistered data type
+            Assert.NotNull(typeInfo);
+
+            var pin = new Memory<T>(data).Pin();
+            try
+            {
+                IntPtr buffer;
+                long bufferLen = typeInfo.TypeSize * data.Length;
+                unsafe
+                {
+                    buffer = (IntPtr)pin.Pointer;
+                }
+                var result = OrtValue.CreateTensorValueWithData(OrtMemoryInfo.DefaultInstance, typeInfo.ElementType,
+                    shape, buffer, bufferLen);
+                return (result, pin);
+            }
+            catch (Exception)
+            {
+                pin.Dispose();
+                throw;
+            }
+        }
+
         internal static NamedOnnxValue CreateNamedOnnxValueFromStringTensor(IList<Google.Protobuf.ByteString> strings,
             string nodeName, int[] dimensions)
         {
@@ -437,6 +607,26 @@ namespace Microsoft.ML.OnnxRuntime.Tests
 
             var dt = new DenseTensor<string>(strArray, dimensions);
             return NamedOnnxValue.CreateFromTensor<string>(nodeName, dt);
+        }
+
+        internal static OrtValue CreateOrtValueFromStringTensor(IList<Google.Protobuf.ByteString> strings,
+            long[] shape)
+        {
+            var ortValue = OrtValue.CreateTensorWithEmptyStrings(OrtAllocator.DefaultInstance, shape);
+            try
+            {
+                for (int i = 0; i < strings.Count; ++i)
+                {
+                    var str = Encoding.UTF8.GetString(strings[i].ToByteArray());
+                    ortValue.FillStringTensorElement(str.AsSpan(), i);
+                }
+                return ortValue;
+            }
+            catch (Exception)
+            {
+                ortValue.Dispose();
+                throw;
+            }
         }
 
         internal static float[] LoadTensorFromFile(string filename, bool skipheader = true)

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -694,7 +695,7 @@ namespace Microsoft.ML.OnnxRuntime.Tests
             }
         }
 
-        private void VerifySequenceResults(NamedOnnxValue result, NamedOnnxValue expectedValue, NodeMetadata metaData)
+        private static void VerifySequenceResults(NamedOnnxValue result, NamedOnnxValue expectedValue, NodeMetadata metaData)
         {
             var meta = metaData.AsSequenceMetadata();
             var resultSequence = result.AsEnumerable<NamedOnnxValue>();
@@ -723,54 +724,154 @@ namespace Microsoft.ML.OnnxRuntime.Tests
             }
         }
 
-        private void VerifyTensorResults(TensorElementType elementType, NamedOnnxValue result, NamedOnnxValue outputValue)
+        private static void VerifyTensorResults(TensorElementType elementType, NamedOnnxValue result, NamedOnnxValue expectedValue)
         {
             switch (elementType)
             {
                 case TensorElementType.Float:
-                    Assert.Equal(result.AsTensor<float>(), outputValue.AsTensor<float>(), new FloatComparer());
+                    Assert.Equal(result.AsTensor<float>(), expectedValue.AsTensor<float>(), new FloatComparer());
                     break;
                 case TensorElementType.Double:
-                    Assert.Equal(result.AsTensor<double>(), outputValue.AsTensor<double>(), new DoubleComparer());
+                    Assert.Equal(result.AsTensor<double>(), expectedValue.AsTensor<double>(), new DoubleComparer());
                     break;
                 case TensorElementType.Int32:
-                    Assert.Equal(result.AsTensor<int>(), outputValue.AsTensor<int>(), new ExactComparer<int>());
+                    Assert.Equal(result.AsTensor<int>(), expectedValue.AsTensor<int>(), new ExactComparer<int>());
                     break;
                 case TensorElementType.UInt32:
-                    Assert.Equal(result.AsTensor<uint>(), outputValue.AsTensor<uint>(), new ExactComparer<uint>());
+                    Assert.Equal(result.AsTensor<uint>(), expectedValue.AsTensor<uint>(), new ExactComparer<uint>());
                     break;
                 case TensorElementType.Int16:
-                    Assert.Equal(result.AsTensor<short>(), outputValue.AsTensor<short>(), new ExactComparer<short>());
+                    Assert.Equal(result.AsTensor<short>(), expectedValue.AsTensor<short>(), new ExactComparer<short>());
                     break;
                 case TensorElementType.UInt16:
-                    Assert.Equal(result.AsTensor<ushort>(), outputValue.AsTensor<ushort>(), new ExactComparer<ushort>());
+                    Assert.Equal(result.AsTensor<ushort>(), expectedValue.AsTensor<ushort>(), new ExactComparer<ushort>());
                     break;
                 case TensorElementType.Int64:
-                    Assert.Equal(result.AsTensor<long>(), outputValue.AsTensor<long>(), new ExactComparer<long>());
+                    Assert.Equal(result.AsTensor<long>(), expectedValue.AsTensor<long>(), new ExactComparer<long>());
                     break;
                 case TensorElementType.UInt64:
-                    Assert.Equal(result.AsTensor<ulong>(), outputValue.AsTensor<ulong>(), new ExactComparer<ulong>());
+                    Assert.Equal(result.AsTensor<ulong>(), expectedValue.AsTensor<ulong>(), new ExactComparer<ulong>());
                     break;
                 case TensorElementType.UInt8:
-                    Assert.Equal(result.AsTensor<byte>(), outputValue.AsTensor<byte>(), new ExactComparer<byte>());
+                    Assert.Equal(result.AsTensor<byte>(), expectedValue.AsTensor<byte>(), new ExactComparer<byte>());
                     break;
                 case TensorElementType.Int8:
-                    Assert.Equal(result.AsTensor<sbyte>(), outputValue.AsTensor<sbyte>(), new ExactComparer<sbyte>());
+                    Assert.Equal(result.AsTensor<sbyte>(), expectedValue.AsTensor<sbyte>(), new ExactComparer<sbyte>());
                     break;
                 case TensorElementType.Bool:
-                    Assert.Equal(result.AsTensor<bool>(), outputValue.AsTensor<bool>(), new ExactComparer<bool>());
+                    Assert.Equal(result.AsTensor<bool>(), expectedValue.AsTensor<bool>(), new ExactComparer<bool>());
                     break;
                 case TensorElementType.Float16:
-                    Assert.Equal(result.AsTensor<Float16>(), outputValue.AsTensor<Float16>(), new Float16Comparer { tolerance = 2 });
+                    Assert.Equal(result.AsTensor<Float16>(), expectedValue.AsTensor<Float16>(), new Float16Comparer { tolerance = 2 });
                     break;
                 case TensorElementType.BFloat16:
-                    Assert.Equal(result.AsTensor<BFloat16>(), outputValue.AsTensor<BFloat16>(), new BFloat16Comparer { tolerance = 2 });
+                    Assert.Equal(result.AsTensor<BFloat16>(), expectedValue.AsTensor<BFloat16>(), new BFloat16Comparer { tolerance = 2 });
                     break;
                 case TensorElementType.String:
-                    Assert.Equal(result.AsTensor<string>(), outputValue.AsTensor<string>(), new ExactComparer<string>());
+                    Assert.Equal(result.AsTensor<string>(), expectedValue.AsTensor<string>(), new ExactComparer<string>());
                     break;
                 default:
                     Assert.True(false, "TestPreTrainedModels does not yet support output of type: " + elementType.ToString());
+                    break;
+            }
+        }
+
+        private static void VerifySequenceResults(OrtValue resultSequence, OrtValue expectedSequence, NodeMetadata metaData)
+        {
+            var allocator = OrtAllocator.DefaultInstance;
+            Assert.Equal(OnnxValueType.ONNX_TYPE_SEQUENCE, resultSequence.OnnxType);
+            Assert.Equal(OnnxValueType.ONNX_TYPE_SEQUENCE, expectedSequence.OnnxType);
+
+            var elementMeta = metaData.AsSequenceMetadata().ElementMeta;
+
+            var resultCount = resultSequence.GetCount();
+            Assert.Equal(expectedSequence.GetCount(), resultCount);
+
+            using (var cleanUp = new DisposableListTest<IDisposable>())
+            {
+                for (int i = 0; i < resultCount; ++i)
+                {
+                    var resultItem = resultSequence.GetValue(i, allocator);
+                    cleanUp.Add(resultItem);
+
+                    var expectedItem = expectedSequence.GetValue(i, allocator);
+                    cleanUp.Add(expectedItem);
+
+                    Assert.Equal(elementMeta.OnnxValueType, expectedItem.OnnxType);
+                    Assert.Equal(elementMeta.OnnxValueType, resultItem.OnnxType);
+
+                    switch (elementMeta.OnnxValueType)
+                    {
+                        case OnnxValueType.ONNX_TYPE_TENSOR:
+                            VerifyTensorResults(elementMeta.ElementDataType, resultItem, expectedItem);
+                            break;
+                        case OnnxValueType.ONNX_TYPE_SEQUENCE:
+                            {
+                                VerifySequenceResults(resultItem, expectedItem, elementMeta);
+                            }
+                            break;
+                        default:
+                            Assert.True(false, $"VerifySequenceResults cannot handle Onnxtype: {elementMeta.OnnxValueType}");
+                            break;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// XXX: Need to implement string validation
+        /// </summary>
+        /// <param name="expectedElementType"></param>
+        /// <param name="result"></param>
+        /// <param name="expectedValue"></param>
+        private static void VerifyTensorResults(TensorElementType expectedElementType, OrtValue result, OrtValue expectedValue)
+        {
+            Assert.True(result.IsTensor);
+
+            using (var typeShape = result.GetTensorTypeAndShape())
+            {
+                Assert.Equal(expectedElementType, typeShape.ElementDataType);
+            }
+
+            switch (expectedElementType)
+            {
+                case TensorElementType.Float:
+                    Assert.Equal(result.GetTensorDataAsSpan<float>().ToArray(), expectedValue.GetTensorDataAsSpan<float>().ToArray(),
+                        new FloatComparer());
+                    break;
+                case TensorElementType.Double:
+                    Assert.Equal(result.GetTensorDataAsSpan<double>().ToArray(), expectedValue.GetTensorDataAsSpan<double>().ToArray(),
+                        new DoubleComparer());
+                    break;
+                case TensorElementType.Int32:
+                    Assert.Equal(result.GetTensorDataAsSpan<int>().ToArray(), expectedValue.GetTensorDataAsSpan<int>().ToArray(), new ExactComparer<int>());
+                    break;
+                case TensorElementType.UInt32:
+                    Assert.Equal(result.GetTensorDataAsSpan<uint>().ToArray(), expectedValue.GetTensorDataAsSpan<uint>().ToArray(), new ExactComparer<uint>());
+                    break;
+                case TensorElementType.Int16:
+                    Assert.Equal(result.GetTensorDataAsSpan<short>().ToArray(), expectedValue.GetTensorDataAsSpan<short>().ToArray(), new ExactComparer<short>());
+                    break;
+                case TensorElementType.UInt16:
+                    Assert.Equal(result.GetTensorDataAsSpan<ushort>().ToArray(), expectedValue.GetTensorDataAsSpan<ushort>().ToArray(), new ExactComparer<ushort>());
+                    break;
+                case TensorElementType.Int64:
+                    Assert.Equal(result.GetTensorDataAsSpan<long>().ToArray(), expectedValue.GetTensorDataAsSpan<long>().ToArray(), new ExactComparer<long>());
+                    break;
+                case TensorElementType.UInt64:
+                    Assert.Equal(result.GetTensorDataAsSpan<ulong>().ToArray(), expectedValue.GetTensorDataAsSpan<ulong>().ToArray(), new ExactComparer<ulong>());
+                    break;
+                case TensorElementType.UInt8:
+                    Assert.Equal(result.GetTensorDataAsSpan<byte>().ToArray(), expectedValue.GetTensorDataAsSpan<byte>().ToArray(), new ExactComparer<byte>());
+                    break;
+                case TensorElementType.Int8:
+                    Assert.Equal(result.GetTensorDataAsSpan<sbyte>().ToArray(), expectedValue.GetTensorDataAsSpan<sbyte>().ToArray(), new ExactComparer<sbyte>());
+                    break;
+                case TensorElementType.Bool:
+                    Assert.Equal(result.GetTensorDataAsSpan<bool>().ToArray(), expectedValue.GetTensorDataAsSpan<bool>().ToArray(), new ExactComparer<bool>());
+                    break;
+                default:
+                    Assert.True(false, "VerifyTensorResults cannot handle ElementType: " + expectedElementType.ToString());
                     break;
             }
         }

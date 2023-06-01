@@ -124,7 +124,7 @@ namespace Microsoft.ML.OnnxRuntime.Tests
         }
 
         static void RunTensorCreateWithData<T>(TensorElementType dataType, long[] shape,
-            IntPtr buffer, int bufferLen, ReadOnlySpan<T> originalData)
+            IntPtr buffer, int bufferLen, ReadOnlySpan<T> originalData) where T: struct
         {
             // Verify invocation
             var dataTypeInfo = TensorBase.GetTypeInfo(typeof(T));

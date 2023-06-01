@@ -4,7 +4,6 @@
 using Microsoft.ML.OnnxRuntime.Tensors;
 using System;
 using System.Buffers;
-using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -139,7 +138,7 @@ namespace Microsoft.ML.OnnxRuntime
         /// </summary>
         /// <param name="index"></param>
         /// <param name="allocator">allocator to use</param>
-        /// <returns>OrtValue instance</returns>
+        /// <returns>OrtValue disposable instance</returns>
         public OrtValue GetValue(int index, OrtAllocator allocator)
         {
             NativeApiStatus.VerifySuccess(NativeMethods.OrtGetValue(Handle, index,
@@ -160,9 +159,10 @@ namespace Microsoft.ML.OnnxRuntime
         /// <typeparam name="T"></typeparam>
         /// <returns>ReadOnlySpan<typeparamref name="T"/></returns>
         /// <exception cref="OnnxRuntimeException"></exception>
-        public ReadOnlySpan<T> GetTensorDataAsSpan<T>()
+        public ReadOnlySpan<T> GetTensorDataAsSpan<T>() where T: struct
         {
-            return GetTensorBufferSpanImpl<T>();
+            var byteSpan = GetTensorBufferRawData(typeof(T));
+            return MemoryMarshal.Cast<byte, T>(byteSpan);
         }
 
         /// <summary>
@@ -179,9 +179,19 @@ namespace Microsoft.ML.OnnxRuntime
         /// </summary>
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
-        public Span<T> GetTensorMutableDataAsSpan<T>()
+        public Span<T> GetTensorMutableDataAsSpan<T>() where T: struct
         {
-            return GetTensorBufferSpanImpl<T>();
+            var byteSpan = GetTensorBufferRawData(typeof(T));
+            return MemoryMarshal.Cast<byte, T>(byteSpan);
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <returns></returns>
+        public Span<byte> GetTensorMutableRawData()
+        {
+            return GetTensorBufferRawData(typeof(byte));
         }
 
 
@@ -340,7 +350,7 @@ namespace Microsoft.ML.OnnxRuntime
                    (UIntPtr)index, bufferLen, out buffer));
         }
 
-        private Span<T> GetTensorBufferSpanImpl<T>()
+        private Span<byte> GetTensorBufferRawData(Type requestedType)
         {
             var onnxType = OnnxType;
             if (onnxType != OnnxValueType.ONNX_TYPE_TENSOR)
@@ -349,32 +359,35 @@ namespace Microsoft.ML.OnnxRuntime
                     $"This OrtValue type contains: {onnxType}, not a tensor");
             }
 
-            if (typeof(T) == typeof(string))
+            GetTensorElementTypeAndCount(out long count, out TensorElementType elementType);
+
+            if (elementType == TensorElementType.String)
             {
                 throw new OnnxRuntimeException(ErrorCode.InvalidArgument, "Strings are not supported by this API");
             }
 
-            GetTensorElementTypeAndCount(out long count, out TensorElementType elementType);
+            var typeInfo = TensorBase.GetElementTypeInfo(elementType) ??
+                throw new OnnxRuntimeException(ErrorCode.InvalidArgument, $"Element type: {elementType} is not registered type.");
 
-            var typeInfo = TensorBase.GetTypeInfo(typeof(T)) ??
-                throw new OnnxRuntimeException(ErrorCode.InvalidArgument, $"Type {typeof(T)} is not registered type.");
-
-            if (typeInfo.ElementType != elementType)
+            // We are always Ok with byte
+            if (requestedType != typeof(byte) && requestedType != typeInfo.TensorType)
             {
-                throw new OnnxRuntimeException(ErrorCode.InvalidArgument,
-                    $"Tensor element data type mismatch. Invoked with: {typeInfo.ElementType}, " +
-                    $"this OrtVal contains Tensor<{elementType}>");
+                throw new OnnxRuntimeException(ErrorCode.InvalidArgument, 
+                    $"Requested type: {requestedType} does not match the actual type: {typeInfo.TensorType}");
             }
 
             if (count == 0)
             {
-                return Span<T>.Empty;
+                return Span<byte>.Empty;
             }
 
             NativeApiStatus.VerifySuccess(NativeMethods.OrtGetTensorMutableData(Handle, out IntPtr tensorData));
+
+            var bufferLenInBytes = count * typeInfo.TypeSize;
+
             unsafe
             {
-                return new Span<T>(tensorData.ToPointer(), (int)count);
+                return new Span<byte>(tensorData.ToPointer(), (int)bufferLenInBytes);
             }
         }
 
@@ -424,6 +437,23 @@ namespace Microsoft.ML.OnnxRuntime
                                     elementType,
                                     out IntPtr ortValueHandle
                                 ));
+            return new OrtValue(ortValueHandle);
+        }
+
+        /// <summary>
+        /// The factory API creates an OrtValue with memory allocated using the given allocator
+        /// according to the specified shape and element type. The memory will be released when OrtValue
+        /// is disposed. Use GetTensorMutableDataAsSpan&lt;T&gt;() API to fill in the data.
+        /// </summary>
+        /// <param name="allocator"></param>
+        /// <param name="elementType"></param>
+        /// <param name="shape"></param>
+        /// <returns>A disposable OrtValue</returns>
+        public static OrtValue CreateAllocatedTensorValue(OrtAllocator allocator, TensorElementType elementType,
+                                                         long[] shape)
+        {
+            NativeApiStatus.VerifySuccess(NativeMethods.OrtCreateTensorAsOrtValue(allocator.Pointer, shape,
+                (UIntPtr)shape.Length, elementType, out IntPtr ortValueHandle));
             return new OrtValue(ortValueHandle);
         }
 
@@ -660,7 +690,7 @@ namespace Microsoft.ML.OnnxRuntime
         /// <param name="ortValues">a collection of OrtValues</param>
         /// <returns>A disposable instance of OrtValues</returns>
         /// <exception cref="ArgumentNullException"></exception>
-        public static OrtValue CreateSequence(ICollection<OrtValue> ortValues)
+        public static OrtValue CreateSequence(IReadOnlyCollection<OrtValue> ortValues)
         {
             if (ortValues is null)
             {

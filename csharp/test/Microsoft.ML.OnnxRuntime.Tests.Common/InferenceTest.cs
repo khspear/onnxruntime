@@ -285,9 +285,9 @@ namespace Microsoft.ML.OnnxRuntime.Tests
             {
                 // Set the graph optimization level for this session.
                 SessionOptions options = new SessionOptions();
+                cleanUp.Add(options);
                 options.GraphOptimizationLevel = graphOptimizationLevel;
                 if (enableParallelExecution) options.ExecutionMode = ExecutionMode.ORT_PARALLEL;
-                cleanUp.Add(options);
 
                 var session = new InferenceSession(model, options);
                 cleanUp.Add(session);
@@ -438,43 +438,43 @@ namespace Microsoft.ML.OnnxRuntime.Tests
             }
         }
 
-        [Fact(DisplayName = "InferenceSessionManualDisposeAfterUse")]
-        public void InferenceSessionManualDisposeAfterUse()
+        [Fact(DisplayName = "InferenceSessionDisposed")]
+        public void InferenceSessionDisposed()
         {
             var model = TestDataLoader.LoadModelFromEmbeddedResource("squeezenet.onnx");
 
             // Set the graph optimization level for this session.
-            SessionOptions options = new SessionOptions();
-            options.ProfileOutputPathPrefix = "Ort_P_";
-            options.EnableProfiling = true;
-            var session = new InferenceSession(model, options);
-
-            var inputMeta = session.InputMetadata;
-            var container = new List<NamedOnnxValue>();
-
-            float[] inputData = TestDataLoader.LoadTensorFromEmbeddedResource("bench.in"); // this is the data for only one input tensor for this model
-
-            foreach (var name in inputMeta.Keys)
+            using (SessionOptions options = new SessionOptions())
             {
-                Assert.Equal(typeof(float), inputMeta[name].ElementType);
-                Assert.True(inputMeta[name].IsTensor);
-                var tensor = new DenseTensor<float>(inputData, inputMeta[name].Dimensions);
-                container.Add(NamedOnnxValue.CreateFromTensor<float>(name, tensor));
+                options.ProfileOutputPathPrefix = "Ort_P_";
+                options.EnableProfiling = true;
+                using (var session = new InferenceSession(model, options))
+                {
+                    var inputMeta = session.InputMetadata;
+                    var container = new List<NamedOnnxValue>();
+
+                    float[] inputData = TestDataLoader.LoadTensorFromEmbeddedResource("bench.in"); // this is the data for only one input tensor for this model
+
+                    foreach (var name in inputMeta.Keys)
+                    {
+                        Assert.Equal(typeof(float), inputMeta[name].ElementType);
+                        Assert.True(inputMeta[name].IsTensor);
+                        var tensor = new DenseTensor<float>(inputData, inputMeta[name].Dimensions);
+                        container.Add(NamedOnnxValue.CreateFromTensor<float>(name, tensor));
+                    }
+
+                    // Run inference with named inputs and outputs created with in Run()
+                    using (var results = session.Run(container))  // results is an IReadOnlyList<NamedOnnxValue> container
+                    {
+                        ValidateRunResults(results);
+                    }
+
+                    string profile_file = session.EndProfiling();
+
+                    // Profile file should have the output path prefix in it
+                    Assert.Contains("Ort_P_", profile_file);
+                }
             }
-
-            // Run inference with named inputs and outputs created with in Run()
-            using (var results = session.Run(container))  // results is an IReadOnlyList<NamedOnnxValue> container
-            {
-                ValidateRunResults(results);
-            }
-
-            string profile_file = session.EndProfiling();
-
-            // Profile file should have the output path prefix in it
-            Assert.Contains("Ort_P_", profile_file);
-
-            // Should be able to dispose the session manually
-            session.Dispose();
         }
 
         [Fact(DisplayName = "InferenceSessionGetProfilingStartTimeNs")]
