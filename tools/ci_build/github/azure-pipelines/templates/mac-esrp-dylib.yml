@@ -27,7 +27,7 @@ steps:
     inlineOperation: |
       [
         {
-          "keyCode": "CP-401337-Apple",
+          "keyCode": "CP-233029-Apple",
           "operationSetCode": "MacAppDeveloperSign",
           "parameters": [
             {
